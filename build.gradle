@@ -1,0 +1,40 @@
+group = "jamesl"
+version = "1.0-SNAPSHOT"
+
+
+buildscript {
+    repositories {
+        jcenter()
+    }
+    dependencies {
+        classpath "io.ratpack:ratpack-gradle:1.4.4"
+    }
+}
+
+apply plugin: "groovy"
+apply plugin: "java"
+
+sourceCompatibility = 1.8
+
+
+repositories {
+    jcenter()
+}
+
+dependencies {
+    compile 'io.netty:netty-codec-memcache:4.1.6.Final'
+    compile "io.ratpack:ratpack-core:1.4.4"
+    compile "org.slf4j:slf4j-api:1.7.21"
+
+    testCompile("io.ratpack:ratpack-test:1.4.4")
+    testCompile 'org.apache.logging.log4j:log4j-api:2.6.2'
+    testCompile 'org.apache.logging.log4j:log4j-core:2.6.2'
+    testCompile 'org.apache.logging.log4j:log4j-slf4j-impl:2.6.2'
+    testCompile "org.spockframework:spock-core:1.0-groovy-2.4"
+}
+
+task wrapper(type: Wrapper) {
+    gradleVersion = "3.2"
+}
+
+

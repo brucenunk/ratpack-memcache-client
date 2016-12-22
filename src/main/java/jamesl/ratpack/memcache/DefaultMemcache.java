@@ -4,6 +4,7 @@ import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.pool.*;
@@ -18,7 +19,6 @@ import ratpack.util.internal.ChannelImplDetector;
 
 import java.net.SocketAddress;
 import java.time.Duration;
-import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -90,11 +90,11 @@ class DefaultMemcache implements Memcache {
     }
 
     @Override
-    public <T> Promise<Optional<T>> get(String key, Function<ByteBuf, Optional<T>> mapper) {
+    public <T> Promise<T> get(String key, Function<ByteBuf, T> mapper) {
         return execute(remoteHost(key), spec -> {
             spec.key(key);
             spec.op(BinaryMemcacheOpcodes.GET);
-        }, mapIfOK(mapper).mapIfNotExists(Optional.empty()));
+        }, mapIfOK(mapper).mapIfNotExists(null));
     }
 
     @Override
@@ -145,20 +145,31 @@ class DefaultMemcache implements Memcache {
     private ChannelPoolHandler channelPoolHandler() {
         return new AbstractChannelPoolHandler() {
             @Override
-            public void channelReleased(Channel ch) throws Exception {
-                ReadTimeoutHandler readTimeoutHandler = ch.pipeline().get(ReadTimeoutHandler.class);
-                if (readTimeoutHandler != null) {
-                    ch.pipeline().remove(readTimeoutHandler);
-                }
-                logger.trace("released channel {}.", ch);
-            }
-
-            @Override
             public void channelCreated(Channel ch) throws Exception {
                 ch.pipeline().addLast("codec", new BinaryMemcacheClientCodec());
                 ch.pipeline().addLast("aggregator", new BinaryMemcacheObjectAggregator(Integer.MAX_VALUE));
-                ch.pipeline().addLast("responseHandler", new ResponseHandler());
                 logger.trace("created channel {}.", ch);
+            }
+
+            @Override
+            public void channelReleased(Channel ch) throws Exception {
+                removeIfExists(ReadTimeoutHandler.class, ch);
+                removeIfExists(ResponseHandler.class, ch);
+                logger.trace("released channel {}.", ch);
+            }
+
+            /**
+             * Removes the handler of type {@code clazz} from the {@link io.netty.channel.ChannelPipeline} if one exists.
+             *
+             * @param clazz
+             * @param channel
+             */
+            private void removeIfExists(Class<? extends ChannelHandler> clazz, Channel channel) {
+                ChannelHandler channelHandler = channel.pipeline().get(clazz);
+                if (channelHandler != null) {
+                    logger.trace("removing {} from channel pipeline.", channelHandler);
+                    channel.pipeline().remove(channelHandler);
+                }
             }
         };
     }
@@ -241,11 +252,10 @@ class DefaultMemcache implements Memcache {
      */
     private Promise<FullBinaryMemcacheResponse> send(Consumer<RequestSpec> spec, Channel channel) {
         return Promise.async(downstream -> {
-            channel.attr(ResponseHandler.DOWNSTREAM).set(downstream);
-
             BinaryMemcacheRequest request = request(spec, channel.alloc());
             logger.trace("sending {} to {}.", request, channel);
 
+            channel.pipeline().addLast("responseHandler", new ResponseHandler(downstream));
             channel.writeAndFlush(request).addListener(f -> {
                 if (f.isSuccess()) {
                     channel.pipeline().addBefore("responseHandler", "readTimeoutHandler", new ReadTimeoutHandler(readTimeout.toMillis(), TimeUnit.MILLISECONDS));

@@ -134,7 +134,7 @@ class MemcacheSpec extends Specification {
 
         then:
         result.success
-        result.value == Optional.empty()
+        result.value == null
     }
 
     def "get when exists"() {
@@ -143,13 +143,13 @@ class MemcacheSpec extends Specification {
         when:
         def result = exec.yield { e ->
             memcache.get("sample") { buffer ->
-                Optional.of(buffer.toString(StandardCharsets.UTF_8))
+                buffer.toString(StandardCharsets.UTF_8)
             }
         }
 
         then:
         result.success
-        result.value == Optional.of("jamesl")
+        result.value == "jamesl"
     }
 
     def "increment when key not exists"() {

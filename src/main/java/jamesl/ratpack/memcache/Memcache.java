@@ -8,7 +8,6 @@ import ratpack.exec.Promise;
 
 import java.net.SocketAddress;
 import java.time.Duration;
-import java.util.Optional;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
@@ -59,11 +58,11 @@ public interface Memcache {
      * Performs a "get" operation.
      *
      * @param key    the key.
-     * @param mapper a mapper that will convert the {@link ByteBuf} containing the value to an instance of {@link Optional}.
+     * @param mapper a mapper that will convert the {@link ByteBuf} containing the value to an instance of {@code T}.
      * @param <T>
      * @return
      */
-    <T> Promise<Optional<T>> get(String key, Function<ByteBuf, Optional<T>> mapper);
+    <T> Promise<T> get(String key, Function<ByteBuf, T> mapper);
 
     /**
      * Performs a "increment" operation.

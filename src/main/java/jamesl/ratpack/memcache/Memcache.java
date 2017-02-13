@@ -8,6 +8,7 @@ import ratpack.exec.Promise;
 
 import java.net.SocketAddress;
 import java.time.Duration;
+import java.util.Optional;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
@@ -39,12 +40,40 @@ public interface Memcache {
     /**
      * Performs a "decrement" operation.
      *
+     * @param key the key.
+     * @return the current value of {@code key}.
+     * @since 1.2
+     */
+    Promise<Optional<Long>> decrement(String key);
+
+    /**
+     * Performs a "decrement" operation.
+     *
+     * @param key   the key.
+     * @param delta the value to decrement.
+     * @return the current value of {@code key}.
+     * @since 1.2
+     */
+    Promise<Optional<Long>> decrement(String key, long delta);
+
+    /**
+     * Performs a "decrement" operation.
+     *
      * @param key     the key.
      * @param ttl     the time-to-live for the value.
      * @param initial the initial value to seed if {@code key} is not found.
      * @return the current value of {@code key}.
      */
     Promise<Long> decrement(String key, Duration ttl, long initial);
+
+    /**
+     * Performs a "delete" operation.
+     *
+     * @param key the key.
+     * @return
+     * @since 1.3
+     */
+    Promise<Boolean> delete(String key);
 
     /**
      * Performs an "exists". This is not a native memcache operation but is implemented as a wrapper around "get".
@@ -60,9 +89,28 @@ public interface Memcache {
      * @param key    the key.
      * @param mapper a mapper that will convert the {@link ByteBuf} containing the value to an instance of {@code T}.
      * @param <T>
-     * @return
+     * @return the current value or {@code null}.
      */
     <T> Promise<T> get(String key, Function<ByteBuf, T> mapper);
+
+    /**
+     * Performs a "increment" operation.
+     *
+     * @param key the key.
+     * @return the current value of {@code key}.
+     * @since 1.2
+     */
+    Promise<Optional<Long>> increment(String key);
+
+    /**
+     * Performs a "increment" operation.
+     *
+     * @param key   the key.
+     * @param delta the value to decrement.
+     * @return the current value of {@code key}.
+     * @since 1.2
+     */
+    Promise<Optional<Long>> increment(String key, long delta);
 
     /**
      * Performs a "increment" operation.
@@ -73,6 +121,17 @@ public interface Memcache {
      * @return the current value of {@code key}.
      */
     Promise<Long> increment(String key, Duration ttl, long initial);
+
+    /**
+     * Performs a "get" operation but returns {@link Optional#empty()} instead of {@code null} if a value does not exist.
+     *
+     * @param key    the key.
+     * @param mapper a mapper that will convert the {@link ByteBuf} containing the value to an instance of {@code T}.
+     * @param <T>
+     * @return the current value wrapped in {@link Optional#of(Object)} or {@link Optional#empty()}.
+     * @since 1.1
+     */
+    <T> Promise<Optional<T>> maybeGet(String key, Function<ByteBuf, T> mapper);
 
     /**
      * Performs a "set" operation.
@@ -97,7 +156,17 @@ public interface Memcache {
         Spec allocator(ByteBufAllocator allocator);
 
         /**
-         * Specifies the {@code connectTimeout}.
+         * Configures the "channel pool".
+         *
+         * @param maxConnections     the maximum number of connections/channels.
+         * @param maxPendingAcquires the maximum number of "pending" channel acquire requests.
+         * @param acquireTimeout     the maximum period of time to wait for a channel.
+         * @return
+         */
+        Spec channelPool(int maxConnections, int maxPendingAcquires, Duration acquireTimeout);
+
+        /**
+         * Specifies the max period of time to wait when trying to connect a channel.
          *
          * @param connectTimeout the connect timeout.
          * @return
@@ -111,14 +180,6 @@ public interface Memcache {
          * @return
          */
         Spec eventGroupLoop(EventLoopGroup eventGroupLoop);
-
-        /**
-         * Specifies the {@code maxConnections} for each "remote host".
-         *
-         * @param maxConnections the max number of connections allowed to each remote host.
-         * @return
-         */
-        Spec maxConnections(int maxConnections);
 
         /**
          * Specifies the {@code readTimeout}.

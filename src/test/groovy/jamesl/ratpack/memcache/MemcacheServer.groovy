@@ -10,7 +10,9 @@ import io.netty.handler.codec.memcache.binary.*
 import ratpack.util.internal.ChannelImplDetector
 
 import java.nio.charset.StandardCharsets
-import java.util.function.Function
+
+import static io.netty.handler.codec.memcache.binary.BinaryMemcacheOpcodes.*
+import static io.netty.handler.codec.memcache.binary.BinaryMemcacheResponseStatus.*
 
 /**
  * @author jamesl
@@ -18,12 +20,14 @@ import java.util.function.Function
 @Slf4j
 class MemcacheServer {
     EventLoopGroup eventLoopGroup
-    Map<String, ByteBuf> items
+    Map<Byte, MemcacheRequestHandler> handlers
+    Items items
     Channel serverChannel
 
     MemcacheServer(EventLoopGroup eventLoopGroup) {
         this.eventLoopGroup = eventLoopGroup
-        this.items = new HashMap<>()
+        this.handlers = [:].withDefault { k, x, v, items -> Optional.empty() }
+        this.items = new Items()
     }
 
     /**
@@ -31,137 +35,174 @@ class MemcacheServer {
      * @return
      */
     InetSocketAddress start() {
+        init()
+        bind()
+        serverChannel.localAddress() as InetSocketAddress
+    }
+
+    private bind() {
         serverChannel = new ServerBootstrap()
                 .channel(ChannelImplDetector.serverSocketChannelImpl)
                 .group(eventLoopGroup)
-                .childHandler(new ChannelInitializer<SocketChannel>(){
-                    void initChannel(SocketChannel channel) throws Exception {
-                        channel.pipeline().addLast("codec", new BinaryMemcacheServerCodec())
-                        channel.pipeline().addLast("aggregator", new BinaryMemcacheObjectAggregator(Integer.MAX_VALUE))
-                        channel.pipeline().addLast("handler", new RequestHandler(items))
-                    }
-                })
+                .childHandler(channelInitializer())
                 .bind("localhost", 0)
                 .sync()
                 .channel()
+    }
 
-        serverChannel.localAddress() as InetSocketAddress
+    private channelInitializer() {
+        new ChannelInitializer<SocketChannel>() {
+            void initChannel(SocketChannel channel) throws Exception {
+                channel.pipeline().addLast("codec", new BinaryMemcacheServerCodec())
+                channel.pipeline().addLast("aggregator", new BinaryMemcacheObjectAggregator(Integer.MAX_VALUE))
+                channel.pipeline().addLast("handler", new SimpleChannelInboundHandler<FullBinaryMemcacheRequest>() {
+                    @Override
+                    protected void channelRead0(ChannelHandlerContext context, FullBinaryMemcacheRequest message) throws Exception {
+                        def key = message.key().toString(StandardCharsets.UTF_8)
+                        def handler = handlers[message.opcode()]
+                        log.trace("op={},key={},handler={}.", message.opcode(), key, handler)
+
+                        handler.accept(key, message.extras(), message.content(), items).ifPresent { response ->
+                            log.trace("response={}.", response)
+                            context.writeAndFlush(response)
+                        }
+                    }
+                })
+            }
+        }
+    }
+
+    static Optional<DefaultFullBinaryMemcacheResponse> empty(short status) {
+        def response = new DefaultFullBinaryMemcacheResponse(Unpooled.EMPTY_BUFFER, Unpooled.EMPTY_BUFFER)
+        response.setStatus(status)
+        Optional.of(response)
+    }
+
+    ByteBuf get(String key) {
+        items.get(key)
+    }
+
+    private init() {
+        on(ADD) { k, x, v, items ->
+            short status
+            if (items.contains(k)) {
+                status = KEY_EEXISTS
+            } else {
+                items.update(k, v)
+                status = SUCCESS
+            }
+
+            return empty(status)
+        }
+
+        on(DECREMENT) { k, x, v, items ->
+            return items.adjust(k, -1, x).map { response(SUCCESS, it) }.orElse(empty(KEY_ENOENT))
+        }
+
+        on(DELETE) { k, x, v, items ->
+            short status = items.update(k, null) ? SUCCESS : KEY_ENOENT
+            return empty(status)
+        }
+
+        on(GET) { k, x, v, items ->
+            v = items.get(k)
+
+            if (v != null) {
+                return response(SUCCESS, Unpooled.copiedBuffer(v))
+            } else {
+                return empty(KEY_ENOENT)
+            }
+        }
+
+        on(INCREMENT) { k, x, v, items ->
+            return items.adjust(k, 1, x).map { response(SUCCESS, it) }.orElse(empty(KEY_ENOENT))
+        }
+
+        on(SET) { k, x, v, items ->
+            items.update(k, v)
+            return empty(SUCCESS)
+        }
+    }
+
+    def on(byte op, MemcacheRequestHandler handler) {
+        handlers[op] = handler
+    }
+
+    static Optional<DefaultFullBinaryMemcacheResponse> response(short status, ByteBuf value) {
+        def response = new DefaultFullBinaryMemcacheResponse(Unpooled.EMPTY_BUFFER, Unpooled.EMPTY_BUFFER, value)
+        response.setStatus(status)
+        Optional.of(response)
     }
 
     /**
      *
      */
     void stop() {
-        items.each { k, v ->
-            log.trace("releasing buffer for item '{}'.", k)
-            v.release()
-        }
+        items.release()
         serverChannel.close().sync()
     }
 
     /**
      *
+     * @param key
+     * @param value
+     * @return
      */
-    private static class RequestHandler extends SimpleChannelInboundHandler<FullBinaryMemcacheRequest> {
-        Map<BinaryMemcacheOpcodes, Function<FullBinaryMemcacheRequest, FullBinaryMemcacheResponse>> handlers
-        Map<String, ByteBuf> items
+    def set(String key, String value) {
+        items.update(key, Unpooled.buffer(value.length()).writeBytes(value.bytes))
+    }
 
-        RequestHandler(Map<String, ByteBuf> items) {
-            this.handlers = new HashMap<>()
-            this.items = items
+    /**
+     *
+     */
+    interface MemcacheRequestHandler {
+        Optional<FullBinaryMemcacheResponse> accept(String key, ByteBuf extras, ByteBuf value, Items items)
+    }
+
+    /**
+     *
+     */
+    static class Items {
+        Map<String, ByteBuf> map
+
+        Items() {
+            map = [:]
         }
 
-        void channelRead0(ChannelHandlerContext ctx, FullBinaryMemcacheRequest req) {
-            def k = req.key().toString(StandardCharsets.UTF_8)
+        Optional<ByteBuf> adjust(String key, int adjustment, ByteBuf x) {
+            def delta = x.readLong() * adjustment
+            def initial = x.readLong()
+            def ttl = x.readInt()
 
-            FullBinaryMemcacheResponse response
-            switch (req.opcode()) {
-                case BinaryMemcacheOpcodes.ADD:
-                    short status
-                    if (items.containsKey(k)) {
-                        status = BinaryMemcacheResponseStatus.KEY_EEXISTS
-                    } else {
-                        addItem(k, Unpooled.buffer(req.content().readableBytes()).writeBytes(req.content()))
-                        status = BinaryMemcacheResponseStatus.SUCCESS
-                    }
+            if (contains(key)) {
+                def v = map.get(key).toString(StandardCharsets.UTF_8)
+                return Optional.of(Unpooled.buffer(8).writeLong(Long.parseLong(v) + delta))
+            } else if (ttl == -1) {
+                return Optional.empty()
+            } else {
+                return Optional.of(Unpooled.buffer(8).writeLong(initial))
+            }
+        }
 
-                    response = new DefaultFullBinaryMemcacheResponse(Unpooled.EMPTY_BUFFER, Unpooled.EMPTY_BUFFER)
-                    response.setStatus(status)
-                    break
-                case BinaryMemcacheOpcodes.DECREMENT:
-                    def x = req.extras()
-                    def delta = x.readLong()
-                    def initial = x.readLong()
+        boolean contains(String key) {
+            map.containsKey(key)
+        }
 
-                    long value
-                    if (items.containsKey(k)) {
-                        value = Long.parseLong(items.get(k).toString(StandardCharsets.UTF_8)) - delta
-                    } else {
-                        value = initial
-                    }
+        ByteBuf get(String key) {
+            map[key]
+        }
 
-                    addItem(k, Unpooled.buffer().writeBytes(String.valueOf(value).bytes))
-
-                    def v = Unpooled.buffer(8).writeLong(value)
-                    response = new DefaultFullBinaryMemcacheResponse(Unpooled.EMPTY_BUFFER, Unpooled.EMPTY_BUFFER, v)
-                    response.setStatus(BinaryMemcacheResponseStatus.SUCCESS)
-                    break
-                case BinaryMemcacheOpcodes.GET:
-                    def v = items.get(k)
-
-                    if (v != null) {
-                        response = new DefaultFullBinaryMemcacheResponse(Unpooled.EMPTY_BUFFER, Unpooled.EMPTY_BUFFER, Unpooled.copiedBuffer(v))
-                        response.setStatus(BinaryMemcacheResponseStatus.SUCCESS)
-                    } else {
-                        response = new DefaultFullBinaryMemcacheResponse(Unpooled.EMPTY_BUFFER, Unpooled.EMPTY_BUFFER)
-                        response.setStatus(BinaryMemcacheResponseStatus.KEY_ENOENT)
-                    }
-
-                    break
-                case BinaryMemcacheOpcodes.INCREMENT:
-                    def x = req.extras()
-                    def delta = x.readLong()
-                    def initial = x.readLong()
-
-                    long value
-                    if (items.containsKey(k)) {
-                        value = Long.parseLong(items.get(k).toString(StandardCharsets.UTF_8)) + delta
-                    } else {
-                        value = initial
-                    }
-
-                    addItem(k, Unpooled.buffer().writeBytes(String.valueOf(value).bytes))
-
-                    def v = Unpooled.buffer(8).writeLong(value)
-                    response = new DefaultFullBinaryMemcacheResponse(Unpooled.EMPTY_BUFFER, Unpooled.EMPTY_BUFFER, v)
-                    response.setStatus(BinaryMemcacheResponseStatus.SUCCESS)
-                    break
-                case BinaryMemcacheOpcodes.SET:
-                    addItem(k, Unpooled.buffer(req.content().readableBytes()).writeBytes(req.content()))
-
-                    response = new DefaultFullBinaryMemcacheResponse(Unpooled.EMPTY_BUFFER, Unpooled.EMPTY_BUFFER)
-                    response.setStatus(BinaryMemcacheResponseStatus.SUCCESS)
-                    break
-                default:
-                    response = new DefaultFullBinaryMemcacheResponse(Unpooled.EMPTY_BUFFER, Unpooled.EMPTY_BUFFER)
-                    break
+        def release() {
+            map.each { k, v ->
+                v.release()
             }
 
-            ctx.writeAndFlush(response)
         }
 
-        /**
-         * Adds an item.
-         *
-         * @param key
-         * @param buffer
-         * @return
-         */
-        def addItem(String key, ByteBuf buffer) {
-            def existing = items.put(key, buffer)
+        def update(String key, ByteBuf value) {
+            def existing = value ? map.put(key, Unpooled.copiedBuffer(value)) : map.remove(key)
 
             if (existing) {
-                log.trace("releasing existing item for '{}'", key)
                 existing.release()
             }
         }

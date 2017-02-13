@@ -10,6 +10,10 @@ import java.nio.charset.StandardCharsets;
  */
 public class MemcacheException extends RuntimeException {
     MemcacheException(FullBinaryMemcacheResponse response) {
-        super(response.content().toString(StandardCharsets.UTF_8));
+        this(response.content().toString(StandardCharsets.UTF_8));
+    }
+
+    MemcacheException(String message) {
+        super(message);
     }
 }

@@ -9,8 +9,14 @@
         <Root level="INFO">
             <AppenderRef ref="console"/>
         </Root>
+        <Logger name="jamesl.ratpack.memcache.DefaultMemcache$DefaultMemcacheChannelPoolHandler" level="TRACE" additivity="false">
+            <AppenderRef ref="console"/>
+        </Logger>
         <!--
-        <Logger name="jamesl.ratpack.memcache" level="TRACE" additivity="false">
+        <Logger name="jamesl" level="DEBUG" additivity="false">
+            <AppenderRef ref="console"/>
+        </Logger>
+        <Logger name="sample" level="DEBUG" additivity="false">
             <AppenderRef ref="console"/>
         </Logger>
         -->

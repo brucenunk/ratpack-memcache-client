@@ -8,9 +8,12 @@ buildscript {
     }
     dependencies {
         classpath "io.ratpack:ratpack-gradle:1.4.5"
+        classpath 'com.github.jengelman.gradle.plugins:shadow:1.2.3'
     }
 }
 
+apply plugin: 'io.ratpack.ratpack-groovy'
+apply plugin: 'com.github.johnrengelman.shadow'
 apply plugin: "groovy"
 apply plugin: "java"
 
@@ -22,15 +25,25 @@ repositories {
 }
 
 dependencies {
+    compile 'com.lmax:disruptor:3.0.0'
     compile 'io.netty:netty-codec-memcache:4.1.6.Final'
     compile "io.ratpack:ratpack-core:1.4.5"
+    compile 'org.apache.logging.log4j:log4j-api:2.6.2'
+    compile 'org.apache.logging.log4j:log4j-core:2.6.2'
+    compile 'org.apache.logging.log4j:log4j-slf4j-impl:2.6.2'
     compile "org.slf4j:slf4j-api:1.7.21"
 
     testCompile("io.ratpack:ratpack-test:1.4.4")
-    testCompile 'org.apache.logging.log4j:log4j-api:2.6.2'
-    testCompile 'org.apache.logging.log4j:log4j-core:2.6.2'
-    testCompile 'org.apache.logging.log4j:log4j-slf4j-impl:2.6.2'
     testCompile "org.spockframework:spock-core:1.0-groovy-2.4"
+}
+
+run {
+    systemProperty 'io.netty.leakDetectionLevel', 'PARANOID'
+    systemProperty 'Log4jContextSelector', 'org.apache.logging.log4j.core.async.AsyncLoggerContextSelector'
+}
+
+shadowJar {
+    classifier = "all"
 }
 
 task wrapper(type: Wrapper) {

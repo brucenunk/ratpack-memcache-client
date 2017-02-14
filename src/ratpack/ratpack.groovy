@@ -24,7 +24,7 @@ ratpack {
                 .map { x -> s2 }
             }
             .then { s ->
-                render "s=${s}"
+                render "OK"
             }
         }
     }

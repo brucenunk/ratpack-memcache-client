@@ -6,6 +6,7 @@ import com.google.inject.Scopes
 import com.google.inject.Singleton
 import io.netty.buffer.ByteBufAllocator
 import jamesl.ratpack.memcache.Memcache
+import ratpack.error.ServerErrorHandler
 import ratpack.exec.ExecController
 
 import java.time.Duration
@@ -16,6 +17,7 @@ import java.time.Duration
 class AppModule extends AbstractModule {
     @Override
     protected void configure() {
+        bind(ServerErrorHandler).to(AppServerErrorHandler).in(Scopes.SINGLETON)
         bind(Random).in(Scopes.SINGLETON)
     }
 

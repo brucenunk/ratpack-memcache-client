@@ -14,6 +14,7 @@ import io.netty.handler.codec.memcache.binary.*;
 import io.netty.handler.timeout.ReadTimeoutHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import ratpack.exec.Execution;
 import ratpack.exec.Operation;
 import ratpack.exec.Promise;
 import ratpack.util.internal.ChannelImplDetector;
@@ -230,11 +231,13 @@ class DefaultMemcache implements Memcache {
      * @return
      */
     private <T> Promise<T> execute(SocketAddress remoteHost, Consumer<RequestSpec> requestSpec, ResponseMapper<T> mapper) {
+        AtomicBoolean channelReleased = new AtomicBoolean(false);
         return connectTo(remoteHost)
+                .next(channel -> Execution.current().onComplete(() -> release(channel, channelReleased, true)))
                 .flatMap(channel ->
                         send(requestSpec, channel)
                                 .flatMap(response -> map(response, mapper).close(() -> release(response)))
-                                .close(() -> release(channel)));
+                                .close(() -> release(channel, channelReleased, false)));
     }
 
     /**
@@ -300,21 +303,25 @@ class DefaultMemcache implements Memcache {
     /**
      * Releases {@code channel} back to it's associated {@link ChannelPool}.
      *
-     * @param channel the channel to release.
+     * @param channel         the channel to release.
+     * @param channelReleased
+     * @param onComplete
      */
-    private void release(Channel channel) {
-        _logger.trace("releasing channel {}.", channel);
-        removeIfExists(ReadTimeoutHandler.class, channel);
-        removeIfExists(ResponseHandler.class, channel);
+    private void release(Channel channel, AtomicBoolean channelReleased, boolean onComplete) {
+        if (channelReleased.compareAndSet(false, true)) {
+            _logger.trace("releasing channel {}, onComplete={}.", channel, onComplete);
+            removeIfExists(ReadTimeoutHandler.class, channel);
+            removeIfExists(ResponseHandler.class, channel);
 
-        SocketAddress remoteHost = channel.remoteAddress();
-        channelPool(remoteHost).release(channel)
-                .addListener(f -> {
-                    _logger.trace("released channel {}.", channel);
-                    if (!f.isSuccess()) {
-                        _logger.trace("failed to release " + channel + " back to pool.", f.cause());
-                    }
-                });
+            SocketAddress remoteHost = channel.remoteAddress();
+            channelPool(remoteHost).release(channel)
+                    .addListener(f -> {
+                        _logger.trace("released channel {}.", channel);
+                        if (!f.isSuccess()) {
+                            _logger.trace("failed to release " + channel + " back to pool.", f.cause());
+                        }
+                    });
+        }
     }
 
     /**

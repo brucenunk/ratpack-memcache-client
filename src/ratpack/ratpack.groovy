@@ -20,7 +20,7 @@ ratpack {
                 def ttl = Duration.ofSeconds(random.nextInt(8))
                 def s2 = "ms=${ttl.toMillis()}"
 
-                memcache.add(key, ttl) { allocator -> allocator.buffer(s2.length()).writeBytes(s2.getBytes(StandardCharsets.UTF_8)) }
+                memcache.add(key, ttl) { it.buffer(s2.length()).writeBytes(s2.getBytes(StandardCharsets.UTF_8)) }
                 .map { x -> s2 }
             }
             .then { s ->

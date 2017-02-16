@@ -38,6 +38,7 @@ import java.util.function.Function;
  */
 class DefaultMemcache implements Memcache {
     private static final Logger _logger = LoggerFactory.getLogger(DefaultMemcache.class);
+    private final ChannelPoolHandler channelPoolHandler;
     private final ChannelPoolMap<SocketAddress, ChannelPool> channelPools;
     private final Duration readTimeout;
     private final Function<String, SocketAddress> routing;
@@ -58,13 +59,14 @@ class DefaultMemcache implements Memcache {
      * @param spec
      */
     private DefaultMemcache(DefaultMemcacheSpec spec) {
+        this.channelPoolHandler = new DefaultMemcacheChannelPoolHandler();
         this.readTimeout = spec.readTimeout;
         this.routing = spec.routing;
 
         this.channelPools = new AbstractChannelPoolMap<SocketAddress, ChannelPool>() {
             @Override
             protected ChannelPool newPool(SocketAddress remoteHost) {
-                return spec.newChannelPool(remoteHost, channelPoolHandler());
+                return spec.newChannelPool(remoteHost, channelPoolHandler);
             }
         };
     }
@@ -192,15 +194,6 @@ class DefaultMemcache implements Memcache {
     }
 
     /**
-     * Returns a new {@link ChannelPoolHandler}.
-     *
-     * @return
-     */
-    private ChannelPoolHandler channelPoolHandler() {
-        return new DefaultMemcacheChannelPoolHandler();
-    }
-
-    /**
      * Connects to {@code remoteHost}.
      *
      * @param remoteHost the remote host to connect to.
@@ -308,17 +301,22 @@ class DefaultMemcache implements Memcache {
      * @param onComplete
      */
     private void release(Channel channel, AtomicBoolean channelReleased, boolean onComplete) {
-        if (channelReleased.compareAndSet(false, true)) {
-            _logger.trace("releasing channel {}, onComplete={}.", channel, onComplete);
-            removeIfExists(ReadTimeoutHandler.class, channel);
-            removeIfExists(ResponseHandler.class, channel);
+        if (onComplete) {
+            _logger.warn("onComplete - channel={},channelReleased={},pool={}.", channel, channelReleased, channelPool(channel.remoteAddress()));
+        }
 
-            SocketAddress remoteHost = channel.remoteAddress();
-            channelPool(remoteHost).release(channel)
+        if (channelReleased.compareAndSet(false, true)) {
+            if (onComplete) {
+                _logger.warn("releasing channel {} during onComplete.", channel);
+            } else {
+                _logger.trace("releasing channel {}.", channel);
+            }
+
+            channelPool(channel.remoteAddress()).release(channel)
                     .addListener(f -> {
                         _logger.trace("released channel {}.", channel);
                         if (!f.isSuccess()) {
-                            _logger.trace("failed to release " + channel + " back to pool.", f.cause());
+                            _logger.warn("failed to release " + channel + " back to pool.", f.cause());
                         }
                     });
         }
@@ -345,20 +343,6 @@ class DefaultMemcache implements Memcache {
     }
 
     /**
-     * Removes the handler of type {@code clazz} from the {@link io.netty.channel.ChannelPipeline} if one exists.
-     *
-     * @param clazz
-     * @param channel
-     */
-    private void removeIfExists(Class<? extends ChannelHandler> clazz, Channel channel) {
-        ChannelHandler channelHandler = channel.pipeline().get(clazz);
-        if (channelHandler != null) {
-            _logger.trace("removing {} from channel pipeline.", channelHandler);
-            channel.pipeline().remove(channelHandler);
-        }
-    }
-
-    /**
      * Creates a {@link BinaryMemcacheRequest} from {@code spec}.
      *
      * @param spec
@@ -382,13 +366,13 @@ class DefaultMemcache implements Memcache {
             log(request);
 
             AtomicBoolean complete = new AtomicBoolean(false);
-            channel.pipeline().addLast("readTimeoutHandler", new ReadTimeoutHandler(readTimeout.toMillis(), TimeUnit.MILLISECONDS));
             channel.pipeline().addLast("responseHandler", new ResponseHandler(complete, downstream));
 
             channel.writeAndFlush(request)
                     .addListener(f -> {
                         if (f.isSuccess()) {
                             _logger.trace("request send to {} - waiting for response.", channel);
+                            channel.pipeline().addBefore("responseHandler", "readTimeoutHandler", new ReadTimeoutHandler(readTimeout.toMillis(), TimeUnit.MILLISECONDS));
                         } else {
                             if (!complete.compareAndSet(false, true)) {
                                 downstream.error(f.cause());
@@ -409,7 +393,7 @@ class DefaultMemcache implements Memcache {
         @Override
         public void channelAcquired(Channel ch) throws Exception {
             int n = numberOfChannels.incrementAndGet();
-            _logger.trace("channel acquired - numberOfChannels={}, channel={}.", n, ch);
+            _logger.debug("channel acquired - numberOfChannels={}, channel={}.", n, ch);
         }
 
         @Override
@@ -418,13 +402,33 @@ class DefaultMemcache implements Memcache {
             ch.pipeline().addLast("aggregator", new BinaryMemcacheObjectAggregator(Integer.MAX_VALUE));
 
             int n = numberOfChannels.incrementAndGet();
-            _logger.trace("channel created - numberOfChannels={}, channel={}.", n, ch);
+            _logger.debug("channel created - numberOfChannels={}, channel={}.", n, ch);
         }
 
         @Override
         public void channelReleased(Channel ch) throws Exception {
             int n = numberOfChannels.decrementAndGet();
-            _logger.trace("channel released - numberOfChannels={}, channel={}.", n, ch);
+            _logger.debug("channel released - numberOfChannels={}, channel={}.", n, ch);
+
+            if (ch.isActive()) {
+                _logger.trace("removing handlers - channel={}.", ch);
+                removeIfExists(ReadTimeoutHandler.class, ch);
+                removeIfExists(ResponseHandler.class, ch);
+            }
+        }
+
+        /**
+         * Removes the handler of type {@code clazz} from the {@link io.netty.channel.ChannelPipeline} if one exists.
+         *
+         * @param clazz
+         * @param channel
+         */
+        private void removeIfExists(Class<? extends ChannelHandler> clazz, Channel channel) {
+            ChannelHandler channelHandler = channel.pipeline().get(clazz);
+            if (channelHandler != null) {
+                _logger.trace("removing {} from channel pipeline.", channelHandler);
+                channel.pipeline().remove(channelHandler);
+            }
         }
     }
 

@@ -11,7 +11,7 @@ import ratpack.handling.Context
 class AppServerErrorHandler implements ServerErrorHandler {
     @Override
     void error(Context context, Throwable e) throws Exception {
-        log.error("e=${e.message}", e)
-        context.render "e=${e.message}"
+        log.error("x=${e.class.simpleName},e=${e.message}", e)
+        context.render "x=${e.class.simpleName},e=${e.message}"
     }
 }

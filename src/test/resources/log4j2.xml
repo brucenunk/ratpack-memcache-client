@@ -9,10 +9,10 @@
         <Root level="INFO">
             <AppenderRef ref="console"/>
         </Root>
-        <!--
         <Logger name="jamesl.ratpack.memcache" level="TRACE" additivity="false">
             <AppenderRef ref="console"/>
         </Logger>
+        <!--
         -->
     </Loggers>
 </Configuration>

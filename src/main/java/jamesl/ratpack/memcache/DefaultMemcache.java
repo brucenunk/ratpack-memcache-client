@@ -40,7 +40,7 @@ class DefaultMemcache implements Memcache {
     private static final Logger _logger = LoggerFactory.getLogger(DefaultMemcache.class);
     private final ChannelPoolHandler channelPoolHandler;
     private final ChannelPoolMap<SocketAddress, ChannelPool> channelPools;
-    private final Duration readTimeout;
+    private final long readTimeoutMillis;
     private final Function<String, SocketAddress> routing;
 
     /**
@@ -60,7 +60,7 @@ class DefaultMemcache implements Memcache {
      */
     private DefaultMemcache(DefaultMemcacheSpec spec) {
         this.channelPoolHandler = new DefaultMemcacheChannelPoolHandler();
-        this.readTimeout = spec.readTimeout;
+        this.readTimeoutMillis = spec.readTimeout.toMillis();
         this.routing = spec.routing;
 
         this.channelPools = new AbstractChannelPoolMap<SocketAddress, ChannelPool>() {
@@ -78,7 +78,7 @@ class DefaultMemcache implements Memcache {
             spec.key(key);
             spec.op(BinaryMemcacheOpcodes.ADD);
             spec.value(valueFactory);
-        }, mapTrueIfOK().mapIfExists(false));
+        }, mapTrueIfOK().mapIfExists(Boolean.FALSE));
     }
 
     @Override
@@ -111,7 +111,7 @@ class DefaultMemcache implements Memcache {
         return execute(remoteHost(key), spec -> {
             spec.key(key);
             spec.op(BinaryMemcacheOpcodes.DELETE);
-        }, mapTrueIfOK().mapIfNotExists(false));
+        }, mapTrueIfOK().mapIfNotExists(Boolean.FALSE));
     }
 
     @Override
@@ -119,7 +119,7 @@ class DefaultMemcache implements Memcache {
         return execute(remoteHost(key), spec -> {
             spec.key(key);
             spec.op(BinaryMemcacheOpcodes.GET);
-        }, mapTrueIfOK().mapIfNotExists(false));
+        }, mapTrueIfOK().mapIfNotExists(Boolean.FALSE));
     }
 
     @Override
@@ -196,17 +196,23 @@ class DefaultMemcache implements Memcache {
     /**
      * Connects to {@code remoteHost}.
      *
-     * @param remoteHost the remote host to connect to.
+     * @param remoteHost      the remote host to connect to.
+     * @param channelReleased
      * @return
      */
-    private Promise<Channel> connectTo(SocketAddress remoteHost) {
-        return Promise.<Channel>async(downstream -> {
+    private Promise<Channel> connectTo(SocketAddress remoteHost, AtomicBoolean channelReleased) {
+        return Promise.async(downstream -> {
+            Execution execution = Execution.current();
+
             _logger.trace("connecting to {}.", remoteHost);
             channelPool(remoteHost).acquire()
                     .addListener(f -> {
                         if (f.isSuccess()) {
-                            _logger.debug("connected to {}.", remoteHost);
-                            downstream.success((Channel) f.getNow());
+                            Channel channel = (Channel) f.getNow();
+                            execution.onComplete(() -> release(channel, channelReleased, true));
+
+                            _logger.trace("connected to {} via {}.", remoteHost, channel);
+                            downstream.success(channel);
                         } else {
                             downstream.error(f.cause());
                         }
@@ -225,12 +231,11 @@ class DefaultMemcache implements Memcache {
      */
     private <T> Promise<T> execute(SocketAddress remoteHost, Consumer<RequestSpec> requestSpec, ResponseMapper<T> mapper) {
         AtomicBoolean channelReleased = new AtomicBoolean(false);
-        return connectTo(remoteHost)
-                .next(channel -> Execution.current().onComplete(() -> release(channel, channelReleased, true)))
-                .flatMap(channel ->
-                        send(requestSpec, channel)
-                                .flatMap(response -> map(response, mapper).close(() -> release(response)))
-                                .close(() -> release(channel, channelReleased, false)));
+        return connectTo(remoteHost, channelReleased)
+                .flatMap(channel -> send(requestSpec, channel)
+                        .flatMap(response -> map(response, mapper).close(() -> release(response)))
+                        .close(() -> release(channel, channelReleased, false))
+                );
     }
 
     /**
@@ -290,7 +295,7 @@ class DefaultMemcache implements Memcache {
      * @return
      */
     private ResponseMapper<Boolean> mapTrueIfOK() {
-        return mapIfOK(response -> true);
+        return mapIfOK(response -> Boolean.TRUE);
     }
 
     /**
@@ -301,10 +306,6 @@ class DefaultMemcache implements Memcache {
      * @param onComplete
      */
     private void release(Channel channel, AtomicBoolean channelReleased, boolean onComplete) {
-        if (onComplete) {
-            _logger.warn("onComplete - channel={},channelReleased={},pool={}.", channel, channelReleased, channelPool(channel.remoteAddress()));
-        }
-
         if (channelReleased.compareAndSet(false, true)) {
             if (onComplete) {
                 _logger.warn("releasing channel {} during onComplete.", channel);
@@ -314,7 +315,8 @@ class DefaultMemcache implements Memcache {
 
             channelPool(channel.remoteAddress()).release(channel)
                     .addListener(f -> {
-                        _logger.trace("released channel {}.", channel);
+                        _logger.trace("released channel {},f={}.", channel, f);
+
                         if (!f.isSuccess()) {
                             _logger.warn("failed to release " + channel + " back to pool.", f.cause());
                         }
@@ -328,8 +330,12 @@ class DefaultMemcache implements Memcache {
      * @param message the message to release.
      */
     private void release(MemcacheMessage message) {
-        _logger.trace("releasing message {}.", message);
-        message.release();
+        try {
+            _logger.trace("releasing message {}.", message);
+            message.release();
+        } catch (Exception e) {
+            _logger.error("failed to release message", e);
+        }
     }
 
     /**
@@ -371,8 +377,8 @@ class DefaultMemcache implements Memcache {
             channel.writeAndFlush(request)
                     .addListener(f -> {
                         if (f.isSuccess()) {
-                            _logger.trace("request send to {} - waiting for response.", channel);
-                            channel.pipeline().addBefore("responseHandler", "readTimeoutHandler", new ReadTimeoutHandler(readTimeout.toMillis(), TimeUnit.MILLISECONDS));
+                            _logger.trace("request sent to {} - waiting for response (timeout={}ms).", channel);
+                            channel.pipeline().addBefore("responseHandler", "readTimeoutHandler", new ReadTimeoutHandler(readTimeoutMillis, TimeUnit.MILLISECONDS));
                         } else {
                             if (!complete.compareAndSet(false, true)) {
                                 downstream.error(f.cause());

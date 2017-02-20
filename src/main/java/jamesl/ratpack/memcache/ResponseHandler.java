@@ -56,7 +56,7 @@ class ResponseHandler extends SimpleChannelInboundHandler<FullBinaryMemcacheResp
     @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
         _logger.trace("closing channel={}", ctx.channel());
-        ctx.channel().close();
+        ctx.close();
 
         if (canComplete()) {
             downstream.error(cause);

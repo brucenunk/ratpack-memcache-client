@@ -33,7 +33,7 @@ class ResponseHandler extends SimpleChannelInboundHandler<FullBinaryMemcacheResp
 
     @Override
     public void channelInactive(ChannelHandlerContext ctx) throws Exception {
-        _logger.trace("channel is now inactive - channel={},complete={}.", ctx.channel(), complete);
+        _logger.warn("channel is now inactive - channel={},complete={}.", ctx.channel(), complete);
         if (canComplete()) {
             downstream.error(new ChannelInactiveException(ctx.channel()));
         }
@@ -55,7 +55,7 @@ class ResponseHandler extends SimpleChannelInboundHandler<FullBinaryMemcacheResp
 
     @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
-        _logger.trace("closing channel={}", ctx.channel());
+        _logger.warn("closing channel={}", ctx.channel());
         ctx.close();
 
         if (canComplete()) {
